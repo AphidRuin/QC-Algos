@@ -5,43 +5,56 @@ from collections import deque
 
 class LogicalFluorescentPinkCaterpillar(QCAlgorithm):
 
+# Define initial conditions
     def Initialize(self):
         self.SetStartDate(2022, 8, 4)
         self.SetEndDate(2023, 8 ,4)
         self.SetCash(100000)
         self.spy = self.AddEquity("SPY", Resolution.Daily).Symbol
-        
+
+# Define custom SMA function which updates daily
         self.sma = CustomSimpleMovingAverage("CustomSMA", 30)
         self.RegisterIndicator(self.spy, self.sma, Resolution.Daily)
 
+# Same as above but more lines
         #self.sma = self.SMA(self.spy, 30, Resolution.Daily)
         #closing_prices = self.History(self.spy, 30, Resolution.Daily)["close"]
         #for time, price in closing_prices.loc[self.spy].items():
             #self.sma.Update(time, price)
 
+# Execute trades based on conditions
     def OnData(self, data):
+
+# If SMA is not ready, do nothing
         if not self.sma.IsReady:
             return
 
+# Delinate low and high based on historical prices from last year
         hist = self.History(self.spy, timedelta(365), Resolution.Daily)
         low = min(hist["low"])
         high = max(hist["high"])
         price = self.Securities[self.spy].Price
 
+# If current price is 5% above highest price and above SMA price, long one share
         if price * 1.05 >= high and self.sma.Current.Value < price:
             if not self.Portfolio[self.spy].IsLong:
                 self.SetHoldings(self.spy, 1)
 
+# If current price is 5% below lowest price and below SMA price, short one share
         elif price * 0.95 <= low and self.sma.Current.Value > price:
             if not self.Portfolio[self.spy].IsShort:
                 self.SetHoldings(self.spy, -1)
 
+# Otherwise, get rid of stock
         else:
             self.Liquidate()
 
+# Plot high, low and SMA in benchmark plot
         self.Plot("Benchmark", "52w-High", high)
         self.Plot("Benchmark", "52w-Low", low)
         self.Plot("Benchmark", "SMA", self.sma.Current.Value)
+
+# Write custom SMA class
 
 class CustomSimpleMovingAverage(PythonIndicator):
 
