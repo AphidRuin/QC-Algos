@@ -1,0 +1,40 @@
+class GapReversalAlgo(QCAlgorithm):
+
+# Set initial conditions
+    def Initialize(self):
+        self.SetStartDate(2018, 1, 1)
+        self.SetEndDate(2021, 1, 1)
+        self.SetCash(100000)
+        self.symbol = self.AddEquity("SPY", Resolution.Minute).Symbol
+        # Rolling window with 2 elements (open and close)
+        self.rollingWindow = RollingWindow[TradeBar](2)
+        self.Consolidate(self.symbol, Resolution.Daily, self.CustomBarHandler)
+        
+        # Schedule exit 15 minutes before market closes daily
+        self.Schedule.On(self.DateRules.EveryDay(self.symbol),
+                 self.TimeRules.BeforeMarketClose(self.symbol, 15),      
+                 self.ExitPositions)
+
+    def OnData(self, data):
+        
+        if not self.rollingWindow.IsReady:
+            return
+        
+        # Do not run code if it is not 9.31 am
+        if not (self.Time.hour == 9 and self.Time.minute == 31):
+            return
+        
+        # If gap up 1% since yesterday's close, sell 1 stock
+        if data[self.symbol].Open >= 1.01*self.rollingWindow[0].Close:
+            self.SetHoldings(self.symbol, -1)
+
+        # If gap down 1% since yesterday's close, buy 1 stock
+        elif data[self.symbol].Open <= 0.99*self.rollingWindow[0].Close:
+            self.SetHoldings(self.symbol, 1)
+
+    # Add daily bar from rolling window
+    def CustomBarHandler(self, bar):
+        self.rollingWindow.Add(bar)
+
+    def ExitPositions(self):
+        self.Liquidate(self.symbol)
