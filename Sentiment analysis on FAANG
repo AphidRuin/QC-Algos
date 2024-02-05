@@ -1,0 +1,116 @@
+"""
+Main
+"""
+
+# region imports
+from AlgorithmImports import *
+
+from universe import FaangUniverseSelectionModel
+from alpha import NewsSentimentAlphaModel
+from portfolio import PartitionedPortfolioConstructionModel
+# endregion
+
+class BreakingNewsEventsAlgorithm(QCAlgorithm):
+
+    undesired_symbols_from_previous_deployment = []
+    checked_symbols_from_previous_deployment = False
+
+    def Initialize(self):
+        self.SetStartDate(2019, 1, 1)
+        self.SetEndDate(2023, 3, 1)
+        self.SetCash(1_000_000)
+        
+        self.Settings.MinimumOrderMarginPortfolioPercentage = 0
+
+        self.SetBrokerageModel(BrokerageName.InteractiveBrokersBrokerage, AccountType.Margin)
+
+        self.UniverseSettings.DataNormalizationMode = DataNormalizationMode.Raw
+        universe = FaangUniverseSelectionModel()
+        self.AddUniverseSelection(universe)
+
+        self.AddAlpha(NewsSentimentAlphaModel())
+
+        # We use 5 partitions because the FAANG universe has 5 members.
+        # If we change the universe to have, say, 100 securities, then 100 paritions means
+        #  that each trade gets a 1% (1/100) allocation instead of a 20% (1/5) allocation.
+        self.SetPortfolioConstruction(PartitionedPortfolioConstructionModel(self, universe.Count))
+
+        self.AddRiskManagement(NullRiskManagementModel())
+
+        self.SetExecution(ImmediateExecutionModel()) 
+
+
+    def OnData(self, data):
+        # Exit positions that aren't backed by existing insights.
+        # If you don't want this behavior, delete this method definition.
+        if not self.IsWarmingUp and not self.checked_symbols_from_previous_deployment:
+            for security_holding in self.Portfolio.Values:
+                if not security_holding.Invested:
+                    continue
+                symbol = security_holding.Symbol
+                if not self.Insights.HasActiveInsights(symbol, self.UtcTime):
+                    self.undesired_symbols_from_previous_deployment.append(symbol)
+            self.checked_symbols_from_previous_deployment = True
+        
+        for symbol in self.undesired_symbols_from_previous_deployment[:]:
+            if self.IsMarketOpen(symbol):
+                self.Liquidate(symbol, tag="Holding from previous deployment that's no longer desired")
+                self.undesired_symbols_from_previous_deployment.remove(symbol)
+
+"""
+Alpha.py
+"""
+#region imports
+from AlgorithmImports import *
+#endregion
+
+class NewsSentimentAlphaModel(AlphaModel):
+
+    securities = []
+    
+    # Assign sentiment values to words
+    word_scores = {'good': 1, 'great': 1, 'best': 1, 'growth': 1,
+                   'bad': -1, 'terrible': -1, 'worst': -1, 'loss': -1}
+
+    def Update(self, algorithm: QCAlgorithm, data: Slice) -> List[Insight]:
+        insights = []
+
+        for security in self.securities:
+            if not security.Exchange.Hours.IsOpen(algorithm.Time + timedelta(minutes=1), extendedMarketHours=False):
+                continue
+            if not data.ContainsKey(security.dataset_symbol):
+                continue
+            article = data[security.dataset_symbol]
+
+            # Assign a sentiment score to the article
+            title_words = article.Description.lower()
+            score = 0
+            for word, word_score in self.word_scores.items():
+                if word in title_words:
+                    score += word_score
+                    
+            # Only trade when there is positive news
+            if score > 0:
+                direction = InsightDirection.Up
+            elif score < 0:
+                direction = InsightDirection.Flat
+            else: 
+                continue
+
+            # Create insights
+            expiry = security.Exchange.Hours.GetNextMarketClose(algorithm.Time, extendedMarketHours=False) - timedelta(minutes=1, seconds=1)
+            insights.append(Insight.Price(security.Symbol, expiry, direction, None, None, None, 1/len(self.securities)))
+
+        return insights
+
+    def OnSecuritiesChanged(self, algorithm: QCAlgorithm, changes: SecurityChanges) -> None:
+        for security in changes.AddedSecurities:
+            # Subscribe to the Tiingo News Feed for this security
+            security.dataset_symbol = algorithm.AddData(TiingoNews, security.Symbol).Symbol
+            self.securities.append(security)
+
+        for security in changes.RemovedSecurities:
+            if security.Symbol in self.securities:
+                # Unsubscribe from the Tiingo News Feed for this security
+                algorithm.RemoveSecurity(self.dataset_symbol)
+                self.securities.remove(security)
